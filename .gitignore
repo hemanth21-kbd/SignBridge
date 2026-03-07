@@ -1,0 +1,6 @@
+ node_modules/
+.env
+reduced_dataset.zip
+dataset/
+venv/
+__pycache__/
