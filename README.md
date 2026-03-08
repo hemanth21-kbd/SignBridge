@@ -1,3 +1,13 @@
+---
+title: SignBridge Backend
+emoji: 🤟
+colorFrom: indigo
+colorTo: purple
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # SignBridge: Deaf and Mute Communication Platform
 
 ## Overview
