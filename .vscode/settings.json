@@ -1,5 +1,9 @@
 {
     "css.lint.unknownAtRules": "ignore",
     "scss.lint.unknownAtRules": "ignore",
-    "less.lint.unknownAtRules": "ignore"
+    "less.lint.unknownAtRules": "ignore",
+    "python.defaultInterpreterPath": "ml/venv/Scripts/python.exe",
+    "python.terminal.activateEnvInCurrentTerminal": true,
+    "python.analysis.extraPaths": ["./ml"],
+    "python.analysis.autoSearchPaths": true
 }
