@@ -1,39 +1,59 @@
 import { useState, useRef, useEffect } from 'react';
 import { Webcam, Type, Save, Volume2, RefreshCw } from 'lucide-react';
 import { FilesetResolver, GestureRecognizer } from '@mediapipe/tasks-vision';
+import * as tf from '@tensorflow/tfjs';
 
 export default function Translator({ user }: any) {
     const [mode, setMode] = useState<'gesture-to-text' | 'text-to-gesture'>('gesture-to-text');
     const [output, setOutput] = useState('');
     const [input, setInput] = useState('');
     const [isTranslating, setIsTranslating] = useState(false);
+    const [isRecording, setIsRecording] = useState(false);
     const [language, setLanguage] = useState('en-US');
 
     const videoRef = useRef<HTMLVideoElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [recognizer, setRecognizer] = useState<GestureRecognizer | null>(null);
+    const [lstmModel, setLstmModel] = useState<tf.LayersModel | null>(null);
     const requestRef = useRef<number>(0);
     const isTranslatingRef = useRef(false);
     const lastVideoTimeRef = useRef(-1);
+    const sequenceRef = useRef<number[][]>([]);
+    
+    // Actions that your LSTM model was trained on. Keep strictly in the same order as collect_data.py
+    const actions = ['hello', 'how are you', 'what are you doing', 'i love you', 'goodbye'];
 
     useEffect(() => {
-        async function loadModel() {
-            const vision = await FilesetResolver.forVisionTasks(
-                'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
-            );
-            const gestureRecognizer = await GestureRecognizer.createFromOptions(vision, {
-                baseOptions: {
-                    // Changing this to point to the local custom 1-Lakh model file. 
-                    // Make sure you place the generated `gesture_recognizer.task` into the SignBridge/frontend/public folder!
-                    modelAssetPath: '/gesture_recognizer.task',
-                    delegate: 'GPU'
-                },
-                runningMode: 'VIDEO',
-                numHands: 2,
-            });
-            setRecognizer(gestureRecognizer);
+        async function initAI() {
+            // 1. Initialize MediaPipe Gesture Recognizer (used to extract keypoints & static letters)
+            try {
+                const vision = await FilesetResolver.forVisionTasks(
+                    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
+                );
+                const gestureRecognizer = await GestureRecognizer.createFromOptions(vision, {
+                    baseOptions: {
+                        modelAssetPath: '/gesture_recognizer.task', // Use custom dataset task if available
+                        delegate: 'GPU'
+                    },
+                    runningMode: 'VIDEO',
+                    numHands: 2,
+                });
+                setRecognizer(gestureRecognizer);
+            } catch (err) {
+                console.warn("Static AI failed to load model. Ensure /gesture_recognizer.task exists.", err);
+            }
+
+            // 2. Initialize TensorFlow.js LSTM Model
+            try {
+                // Load TFJS model from public/tfjs_model directory (trained via Python)
+                const loadedModel = await tf.loadLayersModel('/tfjs_model/model.json');
+                setLstmModel(loadedModel);
+                console.log("LSTM Sentence Model loaded successfully");
+            } catch (err) {
+                console.warn("LSTM Model not found. Did you forget to copy tfjs_model into /public? Dynamic sentences are inactive until model builds.");
+            }
         }
-        loadModel();
+        initAI();
     }, []);
 
     const startCamera = async () => {
@@ -55,79 +75,176 @@ export default function Translator({ user }: any) {
             isTranslatingRef.current = false;
             setIsTranslating(false);
             if (requestRef.current) cancelAnimationFrame(requestRef.current);
+            sequenceRef.current = []; // Reset sequence cleanly
         }
     };
 
+    const extractKeypoints = (results: any) => {
+        // Create two 21x3 arrays for left and right hands, defaulting to 0
+        let lh = new Float32Array(63).fill(0);
+        let rh = new Float32Array(63).fill(0);
+
+        if (results.landmarks && results.handednesses) {
+            results.landmarks.forEach((landmarkList: any, idx: number) => {
+                const handName = results.handednesses[idx][0].categoryName;
+                const arr = new Float32Array(63);
+                landmarkList.forEach((lm: any, i: number) => {
+                    arr[i*3] = lm.x;
+                    arr[i*3+1] = lm.y;
+                    arr[i*3+2] = lm.z;
+                });
+                
+                // MediaPipe on webcam is mirrored by default
+                if (handName === 'Left') {
+                    lh = arr;
+                } else {
+                    rh = arr;
+                }
+            });
+        }
+        
+        // Combine arrays: [left hand array (63 points), right hand array (63 points)] = 126 total
+        const keypoints = new Float32Array(126);
+        keypoints.set(lh, 0);
+        keypoints.set(rh, 63);
+        return Array.from(keypoints);
+    };
+
+    const speakText = (textToSpeak: string = output) => {
+        if (!textToSpeak) return;
+        
+        // 1. Cancel ongoing speech to prevent overlap
+        window.speechSynthesis.cancel();
+        
+        // 2. Setup the voice
+        const utterance = new SpeechSynthesisUtterance(textToSpeak);
+        utterance.lang = language;
+        utterance.rate = 0.9;  // Make it sound natural and conversational
+        utterance.pitch = 1.0; 
+        
+        // 3. Speak the sentence!
+        window.speechSynthesis.speak(utterance);
+    };
+
     const predictWebcam = () => {
-        if (!videoRef.current || !recognizer || !canvasRef.current) return;
+        if (!videoRef.current || !canvasRef.current || !recognizer) return;
 
         const startTimeMs = performance.now();
         if (lastVideoTimeRef.current !== videoRef.current.currentTime) {
             lastVideoTimeRef.current = videoRef.current.currentTime;
-            const results = recognizer.recognizeForVideo(videoRef.current, startTimeMs);
+            
+            try {
+                const results = recognizer.recognizeForVideo(videoRef.current, startTimeMs);
 
-            const ctx = canvasRef.current.getContext('2d');
-            if (ctx) {
-                // Adjust canvas to match video dimensions
-                if (canvasRef.current.width !== videoRef.current.videoWidth) {
-                    canvasRef.current.width = videoRef.current.videoWidth;
-                    canvasRef.current.height = videoRef.current.videoHeight;
-                }
-                ctx.save();
-                ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+                const ctx = canvasRef.current.getContext('2d');
+                if (ctx) {
+                    if (canvasRef.current.width !== videoRef.current.videoWidth) {
+                        canvasRef.current.width = videoRef.current.videoWidth;
+                        canvasRef.current.height = videoRef.current.videoHeight;
+                    }
+                    ctx.save();
+                    
+                    // We can clear, but let's not draw anything if we're not using MediaPipe for sentences anymore,
+                    // BUT we still want skeleton for single letters.
+                    ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
 
-                // Draw hand landmarks
-                if (results.landmarks) {
-                    for (const landmarks of results.landmarks) {
-                        // Draw connections (simple lines between points)
-                        ctx.strokeStyle = '#4f46e5';
-                        ctx.lineWidth = 2;
+                    // --- DRAW WIREFRAME SKELETON ---
+                    if (results.landmarks) {
+                        for (const landmarks of results.landmarks) {
+                            ctx.strokeStyle = '#4f46e5';
+                            ctx.lineWidth = 2;
 
-                        // Hand connections map
-                        const connections = [
-                            [0, 1], [1, 2], [2, 3], [3, 4], // Thumb
-                            [0, 5], [5, 6], [6, 7], [7, 8], // Index
-                            [5, 9], [9, 10], [10, 11], [11, 12], // Middle
-                            [9, 13], [13, 14], [14, 15], [15, 16], // Ring
-                            [13, 17], [0, 17], [17, 18], [18, 19], [19, 20] // Pinky & Palm
-                        ];
+                            const connections = [
+                                [0, 1], [1, 2], [2, 3], [3, 4], // Thumb
+                                [0, 5], [5, 6], [6, 7], [7, 8], // Index
+                                [5, 9], [9, 10], [10, 11], [11, 12], // Middle
+                                [9, 13], [13, 14], [14, 15], [15, 16], // Ring
+                                [13, 17], [0, 17], [17, 18], [18, 19], [19, 20] // Pinky/Palm
+                            ];
 
-                        ctx.beginPath();
-                        for (const [start, end] of connections) {
-                            const p1 = landmarks[start];
-                            const p2 = landmarks[end];
-                            ctx.moveTo(p1.x * canvasRef.current.width, p1.y * canvasRef.current.height);
-                            ctx.lineTo(p2.x * canvasRef.current.width, p2.y * canvasRef.current.height);
-                        }
-                        ctx.stroke();
-
-                        // Draw joints
-                        ctx.fillStyle = '#10b981';
-                        for (const point of landmarks) {
                             ctx.beginPath();
-                            ctx.arc(point.x * canvasRef.current.width, point.y * canvasRef.current.height, 4, 0, 2 * Math.PI);
-                            ctx.fill();
+                            for (const [start, end] of connections) {
+                                const p1 = landmarks[start];
+                                const p2 = landmarks[end];
+                                ctx.moveTo(p1.x * canvasRef.current.width, p1.y * canvasRef.current.height);
+                                ctx.lineTo(p2.x * canvasRef.current.width, p2.y * canvasRef.current.height);
+                            }
+                            ctx.stroke();
+
+                            ctx.fillStyle = '#10b981';
+                            for (const point of landmarks) {
+                                ctx.beginPath();
+                                ctx.arc(point.x * canvasRef.current.width, point.y * canvasRef.current.height, 4, 0, 2 * Math.PI);
+                                ctx.fill();
+                            }
+                        }
+                    }
+                    ctx.restore();
+
+                    // --- LSTM SEQUENCE PREDICTION LOGIC (Full Sentences) ---
+                    if (lstmModel && results.landmarks && results.landmarks.length > 0) {
+                        // Extract 126 coordinate numbers for current frame
+                        const keypoints = extractKeypoints(results);
+                        sequenceRef.current.push(keypoints);
+                        
+                        // Sequence must be exactly 30 frames
+                        if (sequenceRef.current.length > 30) {
+                            sequenceRef.current.shift();
+                        }
+
+                        if (sequenceRef.current.length === 30) {
+                            // Convert the standard JS array to a 3D Tensor array
+                            const sequenceData = tf.tensor([sequenceRef.current]) as tf.Tensor3D;
+                            const prediction = lstmModel.predict(sequenceData) as tf.Tensor;
+                            const resArray = prediction.dataSync(); // Confidences for all 5 actions
+                            
+                            // Get the most confident action
+                            const maxVal = Math.max(...Array.from(resArray));
+                            const predictedActionIdx = resArray.indexOf(maxVal);
+
+                            // Minimum confidence of 85% to trigger a complex sentence recognition
+                            if (maxVal > 0.85) {
+                                const predictedSentence = actions[predictedActionIdx];
+                                
+                                setOutput(prev => {
+                                    // Make sure we didn't just read this exact action so we don't spam 
+                                    if (prev.endsWith(predictedSentence)) return prev;
+                                    
+                                    const newText = prev + (prev.length > 0 ? ' • ' : '') + predictedSentence;
+                                    speakText(predictedSentence); // Auto-read aloud via text-to-speech API
+                                    return newText;
+                                });
+                                // We hit a match! Clear the sequence buffer so it can cleanly capture the next new action
+                                sequenceRef.current = [];
+                            }
+                        }
+                    } 
+                    // --- MEDIA-PIPE STATIC FALLBACK (Single Letters) ---
+                    else if (results.gestures.length > 0) {
+                        for (const handGestures of results.gestures) {
+                            if (handGestures.length > 0) {
+                                const categoryName = handGestures[0].categoryName;
+                                const categoryScore = parseFloat((handGestures[0].score * 100).toFixed(2));
+
+                                if (categoryScore > 75 && categoryName !== 'None') {
+                                    const mappedName = categoryName.replace('_', ' ');
+                                    setOutput(prev => {
+                                        // Avoid duplicating the last word
+                                        const words = prev.trim().split(' ');
+                                        if (words[words.length - 1] === mappedName) return prev;
+                                        
+                                        const newText = prev + (prev.length > 0 ? ' ' : '') + mappedName;
+                                        // Speak the new gesture out loud!
+                                        speakText(mappedName);
+                                        return newText;
+                                    });
+                                }
+                            }
                         }
                     }
                 }
-                ctx.restore();
-
-                if (results.gestures.length > 0) {
-                    const categoryName = results.gestures[0][0].categoryName;
-                    const categoryScore = parseFloat((results.gestures[0][0].score * 100).toFixed(2));
-
-                    // Format the name a bit nicer
-                    const mappedName = categoryName.replace('_', ' ');
-
-                    // For demo purposes, we append known gestures if confidence > 85
-                    if (categoryScore > 75 && categoryName !== 'None') {
-                        setOutput(prev => {
-                            if (prev.endsWith(mappedName)) return prev;
-                            const newText = prev + (prev.length > 0 ? ' ' : '') + mappedName;
-                            return newText;
-                        });
-                    }
-                }
+            } catch (err) {
+                console.error(err);
             }
         }
         if (isTranslatingRef.current) {
@@ -135,10 +252,65 @@ export default function Translator({ user }: any) {
         }
     };
 
-    const speakText = () => {
-        const utterance = new SpeechSynthesisUtterance(output || input);
-        utterance.lang = language;
-        window.speechSynthesis.speak(utterance);
+    const handleRecordAndTranslate = async () => {
+        if (!videoRef.current) return;
+        
+        setIsRecording(true);
+        setOutput('Recording video frames...');
+        const frames: string[] = [];
+        const captureInterval = 300; // ms between frames
+        const totalFrames = 8; // approx 2.4 seconds
+        
+        const captureFrame = () => {
+            if (!videoRef.current) return;
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = videoRef.current.videoWidth;
+            tempCanvas.height = videoRef.current.videoHeight;
+            const ctx = tempCanvas.getContext('2d');
+            if (ctx) {
+                ctx.drawImage(videoRef.current, 0, 0, tempCanvas.width, tempCanvas.height);
+                frames.push(tempCanvas.toDataURL('image/jpeg', 0.5)); // 50% quality JPEG to save bandwidth
+            }
+        };
+
+        let frameCount = 0;
+        captureFrame(); // init immediately
+        frameCount++;
+
+        const timer = setInterval(async () => {
+            captureFrame();
+            frameCount++;
+            
+            if (frameCount >= totalFrames) {
+                clearInterval(timer);
+                setIsRecording(false);
+                
+                // Now send to backend
+                try {
+                    setOutput('Analyzing with Gemini AI...');
+                    const res = await fetch('http://localhost:5000/api/translate/video', {
+                         method: 'POST',
+                         headers: { 'Content-Type': 'application/json' },
+                         body: JSON.stringify({ frames })
+                    });
+                    const data = await res.json();
+                    
+                    if (data.text) {
+                        setOutput(data.text);
+                        speakText(data.text);
+                    } else if (data.error) {
+                        setOutput('Error: ' + data.error + (data.details ? ' (' + data.details + ')' : ''));
+                    }
+                } catch (err) {
+                    console.error(err);
+                    setOutput('Translation failed. Is backend running with GEMINI_API_KEY?');
+                }
+            }
+        }, captureInterval);
+    };
+
+    const handleSpeak = () => {
+         speakText(mode === 'gesture-to-text' ? output : input);
     };
 
     const saveHistory = async () => {
@@ -209,11 +381,28 @@ export default function Translator({ user }: any) {
                             <canvas
                                 ref={canvasRef}
                                 className="absolute inset-0 w-full h-full pointer-events-none"
+                                style={{ transform: 'scaleX(-1)' }}
                             ></canvas>
                             {!isTranslating && (
                                 <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-500">
                                     <Webcam size={48} className="mb-4 opacity-50 group-hover:scale-110 transition-transform" />
                                     <p>Click "Start Camera" to track gestures</p>
+                                </div>
+                            )}
+                            {isTranslating && (
+                                <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex gap-4 z-10">
+                                    <button
+                                        onClick={handleRecordAndTranslate}
+                                        disabled={isRecording}
+                                        className={`px-6 py-3 rounded-full font-bold shadow-xl flex items-center gap-2 transition-all ${
+                                            isRecording 
+                                                ? 'bg-red-500 text-white animate-pulse' 
+                                                : 'bg-indigo-600 hover:bg-indigo-500 text-white hover:scale-105'
+                                        }`}
+                                    >
+                                        <div className={`w-3 h-3 rounded-full ${isRecording ? 'bg-white' : 'bg-red-500'}`}></div>
+                                        {isRecording ? 'Recording...' : 'Translate Sentence (Gemini AI)'}
+                                    </button>
                                 </div>
                             )}
                         </div>
@@ -254,13 +443,13 @@ export default function Translator({ user }: any) {
                             </div>
                             <div className="mt-4 flex flex-wrap gap-2 justify-end">
                                 <button
-                                    onClick={() => setOutput('')}
+                                    onClick={() => { setOutput(''); sequenceRef.current = []; }}
                                     className="px-4 py-2 flex items-center gap-2 bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 rounded-lg transition text-sm font-semibold"
                                 >
                                     <RefreshCw size={16} /> Clear
                                 </button>
                                 <button
-                                    onClick={speakText}
+                                    onClick={handleSpeak}
                                     className="px-4 py-2 flex items-center gap-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg transition text-sm font-semibold shadow-lg shadow-indigo-500/30"
                                 >
                                     <Volume2 size={16} /> Speak

@@ -1,6 +1,15 @@
- node_modules/
+node_modules/
 .env
 reduced_dataset.zip
 dataset/
 venv/
 __pycache__/
+*.h5
+*.task
+*.npy
+Dataset_Sequences/
+backend/database.sqlite
+frontend/dist/
+.vscode/
+Logs/
+*.pyc
