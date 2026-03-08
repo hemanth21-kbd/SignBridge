@@ -79,7 +79,7 @@ app.post('/api/translate/video', async (req, res) => {
         }
 
         // Initialize Gemini Model
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
         // Map frames to Gemini's expected format
         const imageParts = frames.map(frameBase64 => {
