@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { Webcam, Type, Save, Volume2, RefreshCw } from 'lucide-react';
 import { FilesetResolver, GestureRecognizer } from '@mediapipe/tasks-vision';
 import * as tf from '@tensorflow/tfjs';
+import { API_URL } from '../config';
 
 export default function Translator({ user }: any) {
     const [mode, setMode] = useState<'gesture-to-text' | 'text-to-gesture'>('gesture-to-text');
@@ -288,7 +289,7 @@ export default function Translator({ user }: any) {
                 // Now send to backend
                 try {
                     setOutput('Analyzing with Gemini AI...');
-                    const res = await fetch('http://localhost:5000/api/translate/video', {
+                    const res = await fetch(`${API_URL}/api/translate/video`, {
                          method: 'POST',
                          headers: { 'Content-Type': 'application/json' },
                          body: JSON.stringify({ frames })
@@ -316,7 +317,7 @@ export default function Translator({ user }: any) {
     const saveHistory = async () => {
         if (!user || (!output && !input)) return;
         try {
-            await fetch('http://localhost:5000/api/history', {
+            await fetch(`${API_URL}/api/history`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({

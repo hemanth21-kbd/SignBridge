@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
+import { API_URL } from '../config';
 
 export default function History({ user }: any) {
     const [history, setHistory] = useState<any[]>([]);
 
     useEffect(() => {
         if (user?.id) {
-            fetch(`http://localhost:5000/api/history/${user.id}`)
+            fetch(`${API_URL}/api/history/${user.id}`)
                 .then((res) => res.json())
                 .then((data) => setHistory(data))
                 .catch((err) => console.error(err));
