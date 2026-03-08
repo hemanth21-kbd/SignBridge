@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: signbridge-backend
+    runtime: node
+    plan: free
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false # You will need to enter this in the Render dashboard
+      - key: SECRET_KEY
+        generateValue: true
+      - key: PORT
+        value: 5000
