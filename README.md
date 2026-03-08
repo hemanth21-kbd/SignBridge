@@ -6,7 +6,7 @@ SignBridge is an AI-powered full-stack web application designed to bridge the co
 ## Architecture
 - **Frontend**: React.js, Tailwind CSS, Framer Motion, `@mediapipe/tasks-vision`.
 - **Backend**: Node.js, Express, SQLite3 for Authentication and Translation History.
-- **Machine Learning**: Pre-trained MediaPipe Gesture Recognizer, with a robust custom-training pipeline built in `ml/`.
+- **Machine Learning**: Pre-trained MediaPipe Gesture Recognizer, with a robust custom-training pipeline built in `ml/`. Uses **Gemini 2.0 Flash** for complex video translation.
 
 ## Folder Structure
 ```
